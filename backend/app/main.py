@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from backend.app.api.v1.endpoints import auth, users
 from backend.app.core.config import settings
 from backend.app.core.logging_config import setup_logging
 from backend.app.schemas.health import HealthCheckResponse
@@ -29,6 +30,10 @@ app = FastAPI(
     openapi_url=f"{settings.api_prefix}/openapi.json",
     lifespan=lifespan,
 )
+
+app.include_router(users.router, prefix=f"{settings.api_prefix}/users", tags=["Users"])
+
+app.include_router(auth.router, prefix=f"{settings.api_prefix}/auth", tags=["Auth"])
 
 
 @app.get("/health", response_model=HealthCheckResponse)

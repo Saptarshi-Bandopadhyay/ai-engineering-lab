@@ -5,8 +5,15 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "fastapi[standard]>=0.140.13",
+    "alembic>=1.18.5",
+    "asyncpg>=0.31.0",
+    "bcrypt>=5.0.0",
+    "fastapi[standard]>=0.140.13",  
+    "pwdlib[argon2]>=0.3.0",
     "pydantic-settings>=2.14.2",
+    "pydantic[email]>=2.13.4",
+    "pyjwt>=2.13.0",
+    "sqlalchemy[asyncio]>=2.0.51",
 ]
 
 [dependency-groups]
@@ -14,4 +21,18 @@ dev = [
     "pre-commit>=4.6.1",
     "pytest>=9.1.1",
     "ruff>=0.16.0",
+]
+
+[tool.ruff.lint.flake8-bugbear]
+# Allow FastAPI dependencies in function signatures
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Path",
+    "fastapi.Body",
+    "fastapi.Form",
+    "fastapi.Header",
+    "fastapi.Cookie",
+    "fastapi.File",
+    "fastapi.Security",
 ]
