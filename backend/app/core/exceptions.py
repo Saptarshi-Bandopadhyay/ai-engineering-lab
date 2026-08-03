@@ -8,3 +8,7 @@ class InvalidCredentialsError(DomainError):
 
 class DuplicateResourceError(DomainError):
     """Raised when trying to create a resource that already exists."""
+
+
+class NotFoundError(DomainError):
+    """Raised when a conversation is not found"""
