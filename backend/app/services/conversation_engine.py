@@ -1,10 +1,18 @@
+import asyncio
+import json
+import logging
+import uuid
+from collections.abc import AsyncGenerator
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.llm.base import BaseLLMProvider
-from backend.app.llm.prompt_formatter import PromptFormatter
-from backend.app.models.message import MessageRole
+from backend.app.llm.base import BaseLLMProvider, LLMStreamChunk, StreamEventType
+from backend.app.llm.prompt_builder import PromptBuilder
+from backend.app.models.message import MessageRole, MessageStatus
 from backend.app.repositories.message_repository import MessageRepository
 from backend.app.services.conversation_service import ConversationService
+
+logger = logging.getLogger(__name__)
 
 
 class ConversationEngine:
@@ -34,7 +42,7 @@ class ConversationEngine:
         history = await self.msg_repo.get_history_by_conversation(
             session, conversation_id
         )
-        formatted_prompt = PromptFormatter.format_history(history)
+        formatted_prompt = PromptBuilder.format_history(history)
 
         # 4. Call LLM (If this fails, an exception is raised, but the user_msg is already safely committed!)
         llm_response = await self.llm_provider.complete(formatted_prompt)
@@ -54,3 +62,102 @@ class ConversationEngine:
         await session.refresh(ai_msg)
 
         return [user_msg, ai_msg]
+
+    async def stream_message(
+        self, session: AsyncSession, conversation_id: int, user_id: int, content: str
+    ) -> AsyncGenerator[LLMStreamChunk]:
+        # 1. Tracing: Assign a unique request ID for observability
+        request_id = str(uuid.uuid4())
+        logger.info(
+            f"[{request_id}] Starting stream for conversation {conversation_id}"
+        )
+
+        # 2. Authorization
+        await self.conv_service.get_own_conversation(session, conversation_id, user_id)
+
+        # 3. Persist User Message (Transaction 1)
+        user_msg = self.msg_repo.add(
+            conversation_id, MessageRole.USER, content, status=MessageStatus.COMPLETED
+        )
+        session.add(user_msg)
+        await session.commit()
+        await session.refresh(user_msg)
+
+        # Yield the user message creation event
+        yield LLMStreamChunk(
+            event_type=StreamEventType.USER_MESSAGE,
+            content=json.dumps({"id": user_msg.id, "content": user_msg.content}),
+        )
+
+        # 4. Prepare Workflow State
+        history = await self.msg_repo.get_history_by_conversation(
+            session, conversation_id
+        )
+        formatted_prompt = PromptBuilder.format_history(history)
+
+        accumulated_content = ""
+        status = MessageStatus.COMPLETED
+        metadata = {}
+
+        # 5. The Three-Way Async Pipe
+        try:
+            async for chunk in self.llm_provider.stream(formatted_prompt):
+                if chunk.event_type == StreamEventType.TOKEN:
+                    accumulated_content += chunk.content
+                    yield chunk
+
+                elif chunk.event_type == StreamEventType.COMPLETED:
+                    metadata = {
+                        "provider_model": chunk.provider_model,
+                        "latency_ms": chunk.latency_ms,
+                        "prompt_tokens": chunk.prompt_tokens,
+                        "completion_tokens": chunk.completion_tokens,
+                    }
+
+        except asyncio.CancelledError:
+            # Client disconnected mid-stream
+            logger.warning(f"[{request_id}] Client disconnected. Halting generation.")
+            status = MessageStatus.PARTIAL
+            raise  # Bubble up to FastAPI so it closes the socket
+
+        except Exception as e:
+            # LLM Provider failed mid-stream
+            logger.error(f"[{request_id}] LLM Generation failed: {e!s}")
+            status = MessageStatus.FAILED
+            yield LLMStreamChunk(
+                event_type=StreamEventType.ERROR,
+                content="Generation failed mid-stream.",
+            )
+
+        finally:
+            # 6. Final Persistence (Guaranteed execution)
+            if accumulated_content:
+                ai_msg = self.msg_repo.add(
+                    conversation_id=conversation_id,
+                    role=MessageRole.ASSISTANT,
+                    content=accumulated_content,
+                    status=status,
+                    provider_model=metadata.get("provider_model"),
+                    prompt_tokens=metadata.get("prompt_tokens"),
+                    completion_tokens=metadata.get("completion_tokens"),
+                    latency_ms=metadata.get("latency_ms"),
+                )
+                session.add(ai_msg)
+
+                # We only yield the final COMPLETED event *after* DB commit succeeds.
+                try:
+                    await session.commit()
+                    logger.info(
+                        f"[{request_id}] Assistant message saved. Status: {status}"
+                    )
+
+                    if status == MessageStatus.COMPLETED:
+                        yield LLMStreamChunk(
+                            event_type=StreamEventType.COMPLETED,
+                            content=json.dumps({"id": ai_msg.id}),
+                        )
+                except Exception as db_e:
+                    logger.error(
+                        f"[{request_id}] Failed to persist AI message: {db_e!s}"
+                    )
+                    # We do not yield the completed event if DB fails.

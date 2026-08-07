@@ -1,11 +1,17 @@
 import time
+from collections.abc import AsyncGenerator
 
 from google import genai
 from google.genai import types
 
 from backend.app.core.config import settings
 from backend.app.core.exceptions import ThirdPartyServiceError
-from backend.app.llm.base import BaseLLMProvider, LLMResponse
+from backend.app.llm.base import (
+    BaseLLMProvider,
+    LLMResponse,
+    LLMStreamChunk,
+    StreamEventType,
+)
 
 
 class GeminiProvider(BaseLLMProvider):
@@ -72,3 +78,38 @@ class GeminiProvider(BaseLLMProvider):
         except Exception as e:
             # We wrap the SDK-specific error to maintain our domain boundaries
             raise ThirdPartyServiceError(f"Gemini generation failed: {e!s}")
+
+    async def stream(
+        self, messages: list[dict[str, str]]
+    ) -> AsyncGenerator[LLMStreamChunk]:
+        start_time = time.time()
+        try:
+            formatted_history = self._format_history_for_gemini(messages)
+            past_history = formatted_history[:-1]
+            # Safely pull the text directly from the Gemini 'parts' object
+            current_message = formatted_history[-1].parts[0].text
+
+            # Initialize chat session
+            chat = self.client.aio.chats.create(model=self.model, history=past_history)
+
+            # Request the streaming response
+            response_stream = await chat.send_message_stream(current_message)
+
+            async for chunk in response_stream:
+                if chunk.text:
+                    yield LLMStreamChunk(
+                        event_type=StreamEventType.TOKEN, content=chunk.text
+                    )
+
+            # The stream is done. We yield a final metadata event.
+            latency = int((time.time() - start_time) * 1000)
+            yield LLMStreamChunk(
+                event_type=StreamEventType.COMPLETED,
+                content="",
+                provider_model=self.model,
+                latency_ms=latency,
+            )
+
+        except Exception as e:
+            # Domain exception boundary
+            raise ThirdPartyServiceError(f"Gemini streaming failed: {e!s}")

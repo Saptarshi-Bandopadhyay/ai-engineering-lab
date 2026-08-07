@@ -18,6 +18,7 @@ class MessageRole(str, enum.Enum):
 
 
 class MessageStatus(str, enum.Enum):
+    PARTIAL = "partial"
     PENDING = "pending"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -32,6 +33,11 @@ class Message(Base):
     )
     role: Mapped[MessageRole] = mapped_column(
         Enum(MessageRole, name="message_role_enum"), nullable=False
+    )
+    status: Mapped[MessageStatus] = mapped_column(
+        Enum(MessageStatus, name="message_status_enum"),
+        nullable=False,
+        default=MessageStatus.COMPLETED,
     )
     content: Mapped[str] = mapped_column(String, nullable=False)
 
