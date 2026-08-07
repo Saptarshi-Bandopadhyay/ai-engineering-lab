@@ -12,3 +12,7 @@ class DuplicateResourceError(DomainError):
 
 class NotFoundError(DomainError):
     """Raised when a conversation is not found"""
+
+
+class ThirdPartyServiceError(DomainError):
+    """Raised when a third party service is not found"""

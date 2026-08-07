@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from backend.app.api.v1.endpoints import auth, users
+from backend.app.api.v1.endpoints import auth, conversation, messages, users
 from backend.app.core.config import settings
 from backend.app.core.logging_config import setup_logging
 from backend.app.schemas.health import HealthCheckResponse
@@ -34,6 +34,14 @@ app = FastAPI(
 app.include_router(users.router, prefix=f"{settings.api_prefix}/users", tags=["Users"])
 
 app.include_router(auth.router, prefix=f"{settings.api_prefix}/auth", tags=["Auth"])
+
+app.include_router(
+    conversation.router,
+    prefix=f"{settings.api_prefix}/conversations",
+    tags=["Conversations"],
+)
+
+app.include_router(messages.router, prefix="/api/v1/conversations", tags=["Messages"])
 
 
 @app.get("/health", response_model=HealthCheckResponse)

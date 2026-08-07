@@ -8,7 +8,9 @@ dependencies = [
     "alembic>=1.18.5",
     "asyncpg>=0.31.0",
     "bcrypt>=5.0.0",
-    "fastapi[standard]>=0.140.13",  
+    "fastapi[standard]>=0.140.13",
+    "google-genai>=2.17.0",
+    "openai>=2.52.0",
     "pwdlib[argon2]>=0.3.0",
     "pydantic-settings>=2.14.2",
     "pydantic[email]>=2.13.4",
@@ -18,8 +20,11 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "aiosqlite>=0.22.1",
+    "httpx>=0.28.1",
     "pre-commit>=4.6.1",
     "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
     "ruff>=0.16.0",
 ]
 
@@ -36,3 +41,6 @@ extend-immutable-calls = [
     "fastapi.File",
     "fastapi.Security",
 ]
+
+[tool.ruff.lint]
+ignore = ["BLE001"]

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from backend.app.db.base import Base
 
 if TYPE_CHECKING:
+    from backend.app.models.message import Message
     from backend.app.models.user import User
 
 
@@ -37,3 +38,7 @@ class Conversation(Base):
 
     # Relationship back to the User
     user: Mapped["User"] = relationship("User", back_populates="conversations")
+
+    messages: Mapped[list["Message"]] = relationship(
+        "Message", back_populates="conversation", order_by="Message.created_at"
+    )

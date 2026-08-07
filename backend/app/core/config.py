@@ -19,6 +19,9 @@ class Settings(BaseSettings):
 
     access_token_expire_minutes: int = 15
 
+    default_llm_model: str = "gemini-flash-lite-latest"
+    gemini_api_key: str
+
     # Database individual parameters
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str
