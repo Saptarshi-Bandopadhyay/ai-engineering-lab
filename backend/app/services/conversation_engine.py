@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.ai.agent import AgentLoop
 from backend.app.ai.llm.base import BaseLLMProvider, LLMStreamChunk, StreamEventType
 from backend.app.ai.prompt_builder import PromptBuilder
 from backend.app.models.message import MessageRole, MessageStatus
@@ -22,17 +23,21 @@ class ConversationEngine:
         conv_service: ConversationService,
         msg_repo: MessageRepository,
         llm_provider: BaseLLMProvider,
-        retrieval_service: RetrievalService | None = None,
+        retrieval_service: RetrievalService,
+        prompt_builder: PromptBuilder,
+        agent_loop: AgentLoop,
     ):
         self.conv_service = conv_service
         self.msg_repo = msg_repo
         self.llm_provider = llm_provider
         self.retrieval_service = retrieval_service
+        self.prompt_builder = prompt_builder
+        self.agent_loop = agent_loop
 
     async def process_user_message(
         self, session: AsyncSession, conversation_id: int, user_id: int, content: str
     ) -> list:
-        # 1. Authorization: Will raise NotFoundError if it's not their conversation
+        # 1. Authorization
         await self.conv_service.get_own_conversation(session, conversation_id, user_id)
 
         # 2. Persist User Message FIRST (Transaction 1)
@@ -41,28 +46,30 @@ class ConversationEngine:
         await session.commit()
         await session.refresh(user_msg)
 
-        # 3. Retrieve formatted history
+        # 3. Retrieve conversation history and document context
         history = await self.msg_repo.get_history_by_conversation(
             session, conversation_id
         )
-        formatted_prompt = PromptBuilder.format_history(history)
+        messages = self._build_agent_messages(history)
+
         retrieved_context = await self._retrieve_context(session, user_id, content)
         system_prompt = PromptBuilder.build_system_prompt(retrieved_context)
 
-        # 4. Call LLM (If this fails, an exception is raised, but the user_msg is already safely committed!)
-        llm_response = await self.llm_provider.complete(
-            formatted_prompt, system_prompt=system_prompt
+        # 4. Run the provider-independent agent loop
+        agent_result = await self.agent_loop.run(
+            messages=messages,
+            system_prompt=system_prompt,
         )
 
-        # 5. Persist Assistant Response (Transaction 2)
+        # 5. Persist the final assistant response
         ai_msg = self.msg_repo.add(
             conversation_id=conversation_id,
             role=MessageRole.ASSISTANT,
-            content=llm_response.content,
-            provider_model=llm_response.provider_model,
-            prompt_tokens=llm_response.prompt_tokens,
-            completion_tokens=llm_response.completion_tokens,
-            latency_ms=llm_response.latency_ms,
+            content=agent_result.content,
+            provider_model=agent_result.provider_model,
+            prompt_tokens=agent_result.prompt_tokens,
+            completion_tokens=agent_result.completion_tokens,
+            latency_ms=agent_result.latency_ms,
         )
         session.add(ai_msg)
         await session.commit()
@@ -100,78 +107,115 @@ class ConversationEngine:
         history = await self.msg_repo.get_history_by_conversation(
             session, conversation_id
         )
-        formatted_prompt = PromptBuilder.format_history(history)
+
+        messages = [
+            {
+                "role": message.role.value.lower(),
+                "content": message.content,
+            }
+            for message in history
+        ]
+
         retrieved_context = await self._retrieve_context(session, user_id, content)
         system_prompt = PromptBuilder.build_system_prompt(retrieved_context)
 
         accumulated_content = ""
         status = MessageStatus.COMPLETED
-        metadata = {}
 
-        # 5. The Three-Way Async Pipe
+        # 5. Run the agent loop.
+        #
+        # Tool-calling iterations are executed internally. Once the agent
+        # reaches its final response, we stream that response through the
+        # existing SSE interface.
         try:
-            async for chunk in self.llm_provider.stream(
-                formatted_prompt, system_prompt=system_prompt
+            async for result in self.agent_loop.run_with_final_stream(
+                messages=messages,
+                system_prompt=system_prompt,
             ):
-                if chunk.event_type == StreamEventType.TOKEN:
-                    accumulated_content += chunk.content
-                    yield chunk
+                if result["type"] == "final_response":
+                    accumulated_content = result["content"]
 
-                elif chunk.event_type == StreamEventType.COMPLETED:
+                    # Stream the final response using the existing SSE
+                    # contract. The agent has already completed any required
+                    # tool calls before reaching this point.
+                    if accumulated_content:
+                        yield LLMStreamChunk(
+                            event_type=StreamEventType.TOKEN,
+                            content=accumulated_content,
+                        )
+
                     metadata = {
-                        "provider_model": chunk.provider_model,
-                        "latency_ms": chunk.latency_ms,
-                        "prompt_tokens": chunk.prompt_tokens,
-                        "completion_tokens": chunk.completion_tokens,
+                        "provider_model": result["provider_model"],
+                        "latency_ms": result["latency_ms"],
+                        "prompt_tokens": result["prompt_tokens"],
+                        "completion_tokens": result["completion_tokens"],
                     }
 
-        except asyncio.CancelledError:
-            # Client disconnected mid-stream
-            logger.warning(f"[{request_id}] Client disconnected. Halting generation.")
-            status = MessageStatus.PARTIAL
-            raise  # Bubble up to FastAPI so it closes the socket
-
-        except Exception as e:
-            # LLM Provider failed mid-stream
-            logger.error(f"[{request_id}] LLM Generation failed: {e!s}")
-            status = MessageStatus.FAILED
-            yield LLMStreamChunk(
-                event_type=StreamEventType.ERROR,
-                content="Generation failed mid-stream.",
-            )
-
-        finally:
-            # 6. Final Persistence (Guaranteed execution)
-            if accumulated_content:
-                ai_msg = self.msg_repo.add(
-                    conversation_id=conversation_id,
-                    role=MessageRole.ASSISTANT,
-                    content=accumulated_content,
-                    status=status,
-                    provider_model=metadata.get("provider_model"),
-                    prompt_tokens=metadata.get("prompt_tokens"),
-                    completion_tokens=metadata.get("completion_tokens"),
-                    latency_ms=metadata.get("latency_ms"),
-                )
-                session.add(ai_msg)
-
-                # We only yield the final COMPLETED event *after* DB commit succeeds.
-                try:
-                    await session.commit()
-                    logger.info(
-                        f"[{request_id}] Assistant message saved. Status: {status}"
+                    ai_msg = self.msg_repo.add(
+                        conversation_id=conversation_id,
+                        role=MessageRole.ASSISTANT,
+                        content=accumulated_content,
+                        status=status,
+                        provider_model=metadata["provider_model"],
+                        prompt_tokens=metadata["prompt_tokens"],
+                        completion_tokens=metadata["completion_tokens"],
+                        latency_ms=metadata["latency_ms"],
                     )
 
-                    if status == MessageStatus.COMPLETED:
+                    session.add(ai_msg)
+
+                    try:
+                        await session.commit()
+
+                        logger.info(
+                            f"[{request_id}] Assistant message saved. Status: {status}"
+                        )
+
                         yield LLMStreamChunk(
                             event_type=StreamEventType.COMPLETED,
                             content=json.dumps({"id": ai_msg.id}),
                         )
-                except Exception as db_e:
-                    logger.error(
-                        f"[{request_id}] Failed to persist AI message: {db_e!s}"
+
+                    except Exception as db_e:
+                        await session.rollback()
+
+                        logger.error(
+                            f"[{request_id}] Failed to persist AI message: {db_e!s}"
+                        )
+
+                elif result["type"] == "max_iterations":
+                    status = MessageStatus.FAILED
+
+                    logger.warning(f"[{request_id}] Agent reached maximum iterations.")
+
+                    yield LLMStreamChunk(
+                        event_type=StreamEventType.ERROR,
+                        content="Agent reached the maximum number of iterations.",
                     )
-                    # We do not yield the completed event if DB fails.
+
+        except asyncio.CancelledError:
+            logger.warning(f"[{request_id}] Client disconnected. Halting generation.")
+            raise
+
+        except Exception as e:
+            logger.error(f"[{request_id}] Agent execution failed: {e!s}")
+
+            status = MessageStatus.FAILED
+
+            yield LLMStreamChunk(
+                event_type=StreamEventType.ERROR,
+                content="Generation failed.",
+            )
+
+    @staticmethod
+    def _build_agent_messages(history) -> list[dict]:
+        return [
+            {
+                "role": message.role.value.lower(),
+                "content": message.content,
+            }
+            for message in history
+        ]
 
     async def _retrieve_context(
         self, session: AsyncSession, user_id: int, query: str

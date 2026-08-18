@@ -1,3 +1,5 @@
+from backend.app.ai.agent import AgentLoop
+from backend.app.ai.tools.defaults import create_default_tool_registry
 from backend.app.dependencies.engine import get_conversation_engine
 from backend.app.main import app
 from backend.app.repositories.conversation_repository import ConversationRepository
@@ -11,10 +13,18 @@ async def test_successful_streaming_flow(
     authorized_client, db_session, test_conversation_id
 ):
     # 1. Inject the mock dependencies
+    mock_llm = MockLLMProvider()
+
     app.dependency_overrides[get_conversation_engine] = lambda: ConversationEngine(
         conv_service=ConversationService(ConversationRepository()),
         msg_repo=MessageRepository(),
-        llm_provider=MockLLMProvider(),
+        llm_provider=mock_llm,
+        retrieval_service=None,
+        prompt_builder=None,
+        agent_loop=AgentLoop(
+            llm_provider=mock_llm,
+            tool_registry=create_default_tool_registry(),
+        ),
     )
 
     # 2. Open the streaming connection

@@ -116,3 +116,54 @@ class OpenAIProvider(BaseLLMProvider):
             )
 
         return tool_calls
+
+    @staticmethod
+    def _format_messages(
+        messages: list[dict],
+        system_prompt: str | None,
+    ) -> list[dict]:
+        formatted: list[dict] = []
+
+        if system_prompt:
+            formatted.append(
+                {
+                    "role": "system",
+                    "content": system_prompt,
+                }
+            )
+
+        for message in messages:
+            role = message["role"]
+
+            if role == "assistant" and message.get("tool_calls"):
+                formatted.append(
+                    {
+                        "role": "assistant",
+                        "content": message.get("content") or None,
+                        "tool_calls": [
+                            {
+                                "id": tool_call["id"],
+                                "type": "function",
+                                "function": {
+                                    "name": tool_call["name"],
+                                    "arguments": json.dumps(tool_call["arguments"]),
+                                },
+                            }
+                            for tool_call in message["tool_calls"]
+                        ],
+                    }
+                )
+
+            elif role == "tool":
+                formatted.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": message["tool_call_id"],
+                        "content": message["content"],
+                    }
+                )
+
+            else:
+                formatted.append(message)
+
+        return formatted

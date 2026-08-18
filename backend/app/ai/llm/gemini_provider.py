@@ -22,22 +22,75 @@ class GeminiProvider(BaseLLMProvider):
         self.model = settings.default_llm_model
 
     def _format_history_for_gemini(
-        self, messages: list[dict[str, str]]
+        self,
+        messages: list[dict],
     ) -> list[types.Content]:
-        """Translates our standard message format into Gemini's Content types."""
-        formatted = []
+        """
+        Translate our provider-neutral message representation into
+        Gemini Content objects.
+
+        Normal messages become text parts.
+
+        Assistant tool calls become function_call parts.
+
+        Tool results become function_response parts.
+        """
+
+        formatted: list[types.Content] = []
+
         for msg in messages:
-            # Gemini strictly uses 'user' and 'model'
-            role = "model" if msg["role"] == "assistant" else msg["role"]
+            role = msg["role"]
 
-            # For this MVP, we'll skip system prompts
-            if role == "system":
-                continue
+            if role == "user":
+                formatted.append(
+                    types.Content(
+                        role="user",
+                        parts=[types.Part(text=msg["content"])],
+                    )
+                )
 
-            # The new SDK uses explicit Pydantic types for parts and content
-            formatted.append(
-                types.Content(role=role, parts=[types.Part(text=msg["content"])])
-            )
+            elif role == "assistant":
+                parts: list[types.Part] = []
+
+                if msg.get("content"):
+                    parts.append(types.Part(text=msg["content"]))
+
+                for tool_call in msg.get("tool_calls", []):
+                    parts.append(
+                        types.Part(
+                            function_call=types.FunctionCall(
+                                name=tool_call["name"],
+                                args=tool_call["arguments"],
+                            )
+                        )
+                    )
+
+                if parts:
+                    formatted.append(
+                        types.Content(
+                            role="model",
+                            parts=parts,
+                        )
+                    )
+
+            elif role == "tool":
+                formatted.append(
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(
+                                function_response=types.FunctionResponse(
+                                    name=msg["name"],
+                                    response={
+                                        "content": msg["content"],
+                                        "is_error": msg["is_error"],
+                                    },
+                                )
+                            )
+                        ],
+                    )
+                )
+
         return formatted
 
     async def complete(
@@ -53,7 +106,7 @@ class GeminiProvider(BaseLLMProvider):
             formatted_history = self._format_history_for_gemini(messages)
 
             past_history = formatted_history[:-1]
-            current_message = messages[-1]["content"]
+            current_message = formatted_history[-1]
 
             config_kwargs = {}
 
@@ -84,7 +137,7 @@ class GeminiProvider(BaseLLMProvider):
                 config=config,
             )
 
-            response = await chat.send_message(current_message)
+            response = await chat.send_message(current_message.parts)
 
             latency = int((time.time() - start_time) * 1000)
 
