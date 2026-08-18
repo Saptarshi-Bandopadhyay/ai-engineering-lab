@@ -25,6 +25,7 @@ class LLMToolCall:
     id: str
     name: str
     arguments: dict[str, Any] = field(default_factory=dict)
+    provider_metadata: dict[str, Any] | None = None
 
 
 ToolChoice = Literal["auto", "none", "required"]

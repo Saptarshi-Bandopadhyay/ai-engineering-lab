@@ -210,11 +210,12 @@ class AgentLoop:
         response: LLMResponse,
     ) -> dict:
         """
-        Convert an LLM response containing tool calls into the generic
+        Convert an LLM response containing tool calls into the provider-neutral
         conversation representation.
 
-        Providers are responsible for translating this representation into
-        their native SDK format.
+        provider_data is preserved so providers that require opaque response
+        metadata, such as Gemini thought signatures, can reconstruct their
+        native conversation history correctly.
         """
 
         return {
@@ -225,9 +226,11 @@ class AgentLoop:
                     "id": tool_call.id,
                     "name": tool_call.name,
                     "arguments": tool_call.arguments,
+                    "provider_metadata": tool_call.provider_metadata,
                 }
                 for tool_call in response.tool_calls or []
             ],
+            "provider_data": response.provider_data,
         }
 
     @staticmethod

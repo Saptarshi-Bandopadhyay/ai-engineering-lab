@@ -50,18 +50,28 @@ class GeminiProvider(BaseLLMProvider):
                 )
 
             elif role == "assistant":
+                provider_data = msg.get("provider_data")
+
+                if provider_data is not None:
+                    formatted.append(provider_data)
+                    continue
+
                 parts: list[types.Part] = []
 
                 if msg.get("content"):
                     parts.append(types.Part(text=msg["content"]))
 
                 for tool_call in msg.get("tool_calls", []):
+                    provider_metadata = tool_call.get("provider_metadata") or {}
                     parts.append(
                         types.Part(
                             function_call=types.FunctionCall(
                                 name=tool_call["name"],
                                 args=tool_call["arguments"],
-                            )
+                            ),
+                            thought_signature=provider_metadata.get(
+                                "thought_signature"
+                            ),
                         )
                     )
 
@@ -85,6 +95,7 @@ class GeminiProvider(BaseLLMProvider):
                                         "content": msg["content"],
                                         "is_error": msg["is_error"],
                                     },
+                                    id=msg["tool_call_id"],
                                 )
                             )
                         ],
@@ -105,9 +116,6 @@ class GeminiProvider(BaseLLMProvider):
         try:
             formatted_history = self._format_history_for_gemini(messages)
 
-            past_history = formatted_history[:-1]
-            current_message = formatted_history[-1]
-
             config_kwargs = {}
 
             if system_prompt:
@@ -119,8 +127,6 @@ class GeminiProvider(BaseLLMProvider):
                 config_kwargs["tools"] = provider_tools
                 config_kwargs["tool_config"] = self._build_tool_config(tool_choice)
 
-                # We execute tools ourselves in PR20. The SDK must not
-                # automatically execute Python functions for us.
                 config_kwargs["automatic_function_calling"] = (
                     types.AutomaticFunctionCallingConfig(
                         disable=True,
@@ -131,13 +137,24 @@ class GeminiProvider(BaseLLMProvider):
                 types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
             )
 
-            chat = self.client.aio.chats.create(
+            response = await self.client.aio.models.generate_content(
                 model=self.model,
-                history=past_history,
+                contents=formatted_history,
                 config=config,
             )
 
-            response = await chat.send_message(current_message.parts)
+            if response.candidates:
+                content = response.candidates[0].content
+
+                for i, part in enumerate(content.parts):
+                    print(
+                        "GEMINI PART",
+                        i,
+                        "function_call=",
+                        part.function_call,
+                        "thought_signature=",
+                        bool(part.thought_signature),
+                    )
 
             latency = int((time.time() - start_time) * 1000)
 
@@ -156,17 +173,23 @@ class GeminiProvider(BaseLLMProvider):
             tool_calls = self._extract_tool_calls(response)
 
             return LLMResponse(
-                content=response.text or "",
+                content=response.text if not tool_calls else "",
                 provider_model=self.model,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 latency_ms=latency,
                 tool_calls=tool_calls or None,
                 finish_reason=None,
+                provider_data=response.candidates[0].content
+                if response.candidates
+                else None,
             )
 
         except Exception as e:
-            raise ThirdPartyServiceError(f"Gemini generation failed: {e!s}")
+            import logging
+
+            logging.getLogger(__name__).exception("Gemini generation failed")
+            raise ThirdPartyServiceError(f"Gemini generation failed: {e!s}") from e
 
     async def stream(
         self,
@@ -211,8 +234,10 @@ class GeminiProvider(BaseLLMProvider):
             )
 
         except Exception as e:
-            # Domain exception boundary
-            raise ThirdPartyServiceError(f"Gemini streaming failed: {e!s}")
+            import logging
+
+            logging.getLogger(__name__).exception("Gemini generation failed")
+            raise ThirdPartyServiceError(f"Gemini generation failed: {e!s}") from e
 
     @staticmethod
     def _build_tools(
@@ -253,7 +278,41 @@ class GeminiProvider(BaseLLMProvider):
     def _extract_tool_calls(response) -> list[LLMToolCall]:
         tool_calls: list[LLMToolCall] = []
 
-        for index, function_call in enumerate(response.function_calls or []):
+        # Real Gemini response.
+        # Inspect the original Part so we can preserve thought_signature.
+        candidates = getattr(response, "candidates", None)
+
+        if candidates:
+            parts = candidates[0].content.parts
+
+            for index, part in enumerate(parts):
+                if not part.function_call:
+                    continue
+
+                function_call = part.function_call
+
+                tool_calls.append(
+                    LLMToolCall(
+                        id=getattr(function_call, "id", None)
+                        or f"gemini-tool-call-{index}",
+                        name=function_call.name,
+                        arguments=dict(function_call.args or {}),
+                        provider_metadata=(
+                            {
+                                "thought_signature": part.thought_signature,
+                            }
+                            if getattr(part, "thought_signature", None)
+                            else None
+                        ),
+                    )
+                )
+
+            return tool_calls
+
+        # Lightweight/test response fallback.
+        for index, function_call in enumerate(
+            getattr(response, "function_calls", None) or []
+        ):
             tool_calls.append(
                 LLMToolCall(
                     id=getattr(function_call, "id", None)

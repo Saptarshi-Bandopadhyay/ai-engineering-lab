@@ -24,6 +24,7 @@ class LLMResponse:
     latency_ms: int
     tool_calls: list[LLMToolCall] | None = None
     finish_reason: str | None = None
+    provider_data: Any | None = None
 
 
 @dataclass
