@@ -30,7 +30,7 @@ def run():
         conv_id = conv_response.json()["id"]
 
         # 3. Stream the AI's Response
-        prompt = "Explain how a Transformer Neural Network works, but explain it like I am a 10-year-old."
+        prompt = "Tell me about the gate syllabus"
         print(f"\n👤 You: {prompt}\n")
         print("🤖 AI: ", end="", flush=True)
 

@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from backend.app.api.v1.endpoints import auth, conversation, messages, users
+from backend.app.api.v1.endpoints import auth, conversation, documents, messages, users
 from backend.app.core.config import settings
 from backend.app.core.logging_config import setup_logging
 from backend.app.schemas.health import HealthCheckResponse
@@ -42,6 +42,12 @@ app.include_router(
 )
 
 app.include_router(messages.router, prefix="/api/v1/conversations", tags=["Messages"])
+
+app.include_router(
+    documents.router,
+    prefix=f"{settings.api_prefix}/documents",
+    tags=["Documents"],
+)
 
 
 @app.get("/health", response_model=HealthCheckResponse)

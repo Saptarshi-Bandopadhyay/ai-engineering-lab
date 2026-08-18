@@ -21,6 +21,8 @@ class Settings(BaseSettings):
 
     default_llm_model: str = "gemini-flash-lite-latest"
     gemini_api_key: str
+    default_embedding_model: str = "gemini-embedding-001"
+    embedding_dimensions: int = 768
 
     # Database individual parameters
     POSTGRES_USER: str

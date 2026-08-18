@@ -6,11 +6,12 @@ from collections.abc import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.llm.base import BaseLLMProvider, LLMStreamChunk, StreamEventType
-from backend.app.llm.prompt_builder import PromptBuilder
+from backend.app.ai.llm.base import BaseLLMProvider, LLMStreamChunk, StreamEventType
+from backend.app.ai.prompt_builder import PromptBuilder
 from backend.app.models.message import MessageRole, MessageStatus
 from backend.app.repositories.message_repository import MessageRepository
 from backend.app.services.conversation_service import ConversationService
+from backend.app.services.retrieval_service import RetrievalService
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +22,12 @@ class ConversationEngine:
         conv_service: ConversationService,
         msg_repo: MessageRepository,
         llm_provider: BaseLLMProvider,
+        retrieval_service: RetrievalService | None = None,
     ):
         self.conv_service = conv_service
         self.msg_repo = msg_repo
         self.llm_provider = llm_provider
+        self.retrieval_service = retrieval_service
 
     async def process_user_message(
         self, session: AsyncSession, conversation_id: int, user_id: int, content: str
@@ -43,9 +46,13 @@ class ConversationEngine:
             session, conversation_id
         )
         formatted_prompt = PromptBuilder.format_history(history)
+        retrieved_context = await self._retrieve_context(session, user_id, content)
+        system_prompt = PromptBuilder.build_system_prompt(retrieved_context)
 
         # 4. Call LLM (If this fails, an exception is raised, but the user_msg is already safely committed!)
-        llm_response = await self.llm_provider.complete(formatted_prompt)
+        llm_response = await self.llm_provider.complete(
+            formatted_prompt, system_prompt=system_prompt
+        )
 
         # 5. Persist Assistant Response (Transaction 2)
         ai_msg = self.msg_repo.add(
@@ -94,6 +101,8 @@ class ConversationEngine:
             session, conversation_id
         )
         formatted_prompt = PromptBuilder.format_history(history)
+        retrieved_context = await self._retrieve_context(session, user_id, content)
+        system_prompt = PromptBuilder.build_system_prompt(retrieved_context)
 
         accumulated_content = ""
         status = MessageStatus.COMPLETED
@@ -101,7 +110,9 @@ class ConversationEngine:
 
         # 5. The Three-Way Async Pipe
         try:
-            async for chunk in self.llm_provider.stream(formatted_prompt):
+            async for chunk in self.llm_provider.stream(
+                formatted_prompt, system_prompt=system_prompt
+            ):
                 if chunk.event_type == StreamEventType.TOKEN:
                     accumulated_content += chunk.content
                     yield chunk
@@ -161,3 +172,15 @@ class ConversationEngine:
                         f"[{request_id}] Failed to persist AI message: {db_e!s}"
                     )
                     # We do not yield the completed event if DB fails.
+
+    async def _retrieve_context(
+        self, session: AsyncSession, user_id: int, query: str
+    ) -> str | None:
+        if self.retrieval_service is None:
+            return None
+
+        try:
+            return await self.retrieval_service.build_context(session, user_id, query)
+        except Exception as e:
+            logger.warning("Document retrieval skipped: %s", e)
+            return None

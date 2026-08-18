@@ -1,6 +1,6 @@
 import asyncio
 
-from backend.app.llm.base import (
+from backend.app.ai.llm.base import (
     BaseLLMProvider,
     LLMResponse,
     LLMStreamChunk,
@@ -9,7 +9,9 @@ from backend.app.llm.base import (
 
 
 class MockLLMProvider(BaseLLMProvider):
-    async def complete(self, messages: list[dict]) -> LLMResponse:
+    async def complete(
+        self, messages: list[dict], system_prompt: str | None = None
+    ) -> LLMResponse:
         return LLMResponse(
             content="This is a mocked AI response.",
             provider_model="mock-gpt-4o",
@@ -18,7 +20,7 @@ class MockLLMProvider(BaseLLMProvider):
             latency_ms=150,
         )
 
-    async def stream(self, messages: list[dict]):
+    async def stream(self, messages: list[dict], system_prompt: str | None = None):
         """Simulates a network stream by yielding chunks with a slight delay."""
         chunks = ["This ", "is ", "a ", "streamed ", "response."]
 

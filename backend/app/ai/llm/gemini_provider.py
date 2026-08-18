@@ -4,14 +4,14 @@ from collections.abc import AsyncGenerator
 from google import genai
 from google.genai import types
 
-from backend.app.core.config import settings
-from backend.app.core.exceptions import ThirdPartyServiceError
-from backend.app.llm.base import (
+from backend.app.ai.llm.base import (
     BaseLLMProvider,
     LLMResponse,
     LLMStreamChunk,
     StreamEventType,
 )
+from backend.app.core.config import settings
+from backend.app.core.exceptions import ThirdPartyServiceError
 
 
 class GeminiProvider(BaseLLMProvider):
@@ -39,7 +39,9 @@ class GeminiProvider(BaseLLMProvider):
             )
         return formatted
 
-    async def complete(self, messages: list[dict[str, str]]) -> LLMResponse:
+    async def complete(
+        self, messages: list[dict[str, str]], system_prompt: str | None = None
+    ) -> LLMResponse:
         start_time = time.time()
         try:
             formatted_history = self._format_history_for_gemini(messages)
@@ -47,9 +49,16 @@ class GeminiProvider(BaseLLMProvider):
             # Gemini expects the history to exclude the final user message when starting a chat
             past_history = formatted_history[:-1]
             current_message = messages[-1]["content"]
+            config = (
+                types.GenerateContentConfig(system_instruction=system_prompt)
+                if system_prompt
+                else None
+            )
 
             # Initialize the chat session asynchronously using the new client.aio syntax
-            chat = self.client.aio.chats.create(model=self.model, history=past_history)
+            chat = self.client.aio.chats.create(
+                model=self.model, history=past_history, config=config
+            )
 
             # Send the new message asynchronously (accepts string directly)
             response = await chat.send_message(current_message)
@@ -80,7 +89,7 @@ class GeminiProvider(BaseLLMProvider):
             raise ThirdPartyServiceError(f"Gemini generation failed: {e!s}")
 
     async def stream(
-        self, messages: list[dict[str, str]]
+        self, messages: list[dict[str, str]], system_prompt: str | None = None
     ) -> AsyncGenerator[LLMStreamChunk]:
         start_time = time.time()
         try:
@@ -88,9 +97,16 @@ class GeminiProvider(BaseLLMProvider):
             past_history = formatted_history[:-1]
             # Safely pull the text directly from the Gemini 'parts' object
             current_message = formatted_history[-1].parts[0].text
+            config = (
+                types.GenerateContentConfig(system_instruction=system_prompt)
+                if system_prompt
+                else None
+            )
 
             # Initialize chat session
-            chat = self.client.aio.chats.create(model=self.model, history=past_history)
+            chat = self.client.aio.chats.create(
+                model=self.model, history=past_history, config=config
+            )
 
             # Request the streaming response
             response_stream = await chat.send_message_stream(current_message)

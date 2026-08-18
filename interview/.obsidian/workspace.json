@@ -27,12 +27,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "Vector Databases and Embeddings.md",
+                "file": "AI Agents and Agentic Systems.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "Vector Databases and Embeddings"
+              "title": "AI Agents and Agentic Systems"
             }
           }
         ],
@@ -205,8 +205,8 @@
   },
   "active": "173f5d399c4d06d0",
   "lastOpenFiles": [
-    "Finetuning and Model Adaptation.md",
     "Vector Databases and Embeddings.md",
+    "Finetuning and Model Adaptation.md",
     "AI Agents and Agentic Systems.md",
     "Prompt Engineering.md",
     "LLM Fundamentals.md",

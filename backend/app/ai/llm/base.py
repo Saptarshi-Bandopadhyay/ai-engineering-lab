@@ -32,11 +32,13 @@ class LLMStreamChunk:
 
 class BaseLLMProvider(ABC):
     @abstractmethod
-    async def complete(self, messages: list[dict[str, str]]) -> LLMResponse:
+    async def complete(
+        self, messages: list[dict[str, str]], system_prompt: str | None = None
+    ) -> LLMResponse:
         """Takes a formatted message history and returns an LLMResponse."""
 
     @abstractmethod
     async def stream(
-        self, messages: list[dict[str, str]]
+        self, messages: list[dict[str, str]], system_prompt: str | None = None
     ) -> AsyncGenerator[LLMStreamChunk]:
         """Yields LLMStreamChunks sequentially."""
