@@ -10,6 +10,7 @@ from backend.app.ai.llm.base import (
     LLMStreamChunk,
     StreamEventType,
 )
+from backend.app.ai.llm.tooling import LLMToolCall, ToolChoice, ToolDefinition
 from backend.app.core.config import settings
 from backend.app.core.exceptions import ThirdPartyServiceError
 
@@ -40,56 +41,86 @@ class GeminiProvider(BaseLLMProvider):
         return formatted
 
     async def complete(
-        self, messages: list[dict[str, str]], system_prompt: str | None = None
+        self,
+        messages: list[dict],
+        system_prompt: str | None = None,
+        tools: list[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
     ) -> LLMResponse:
         start_time = time.time()
+
         try:
             formatted_history = self._format_history_for_gemini(messages)
 
-            # Gemini expects the history to exclude the final user message when starting a chat
             past_history = formatted_history[:-1]
             current_message = messages[-1]["content"]
+
+            config_kwargs = {}
+
+            if system_prompt:
+                config_kwargs["system_instruction"] = system_prompt
+
+            provider_tools = self._build_tools(tools)
+
+            if provider_tools:
+                config_kwargs["tools"] = provider_tools
+                config_kwargs["tool_config"] = self._build_tool_config(tool_choice)
+
+                # We execute tools ourselves in PR20. The SDK must not
+                # automatically execute Python functions for us.
+                config_kwargs["automatic_function_calling"] = (
+                    types.AutomaticFunctionCallingConfig(
+                        disable=True,
+                    )
+                )
+
             config = (
-                types.GenerateContentConfig(system_instruction=system_prompt)
-                if system_prompt
-                else None
+                types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
             )
 
-            # Initialize the chat session asynchronously using the new client.aio syntax
             chat = self.client.aio.chats.create(
-                model=self.model, history=past_history, config=config
+                model=self.model,
+                history=past_history,
+                config=config,
             )
 
-            # Send the new message asynchronously (accepts string directly)
             response = await chat.send_message(current_message)
 
             latency = int((time.time() - start_time) * 1000)
 
-            # Safely extract token counts from the new usage_metadata object
             prompt_tokens = (
                 getattr(response.usage_metadata, "prompt_token_count", 0)
                 if response.usage_metadata
                 else 0
             )
+
             completion_tokens = (
                 getattr(response.usage_metadata, "candidates_token_count", 0)
                 if response.usage_metadata
                 else 0
             )
 
+            tool_calls = self._extract_tool_calls(response)
+
             return LLMResponse(
-                content=response.text,
+                content=response.text or "",
                 provider_model=self.model,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 latency_ms=latency,
+                tool_calls=tool_calls or None,
+                finish_reason=None,
             )
+
         except Exception as e:
-            # We wrap the SDK-specific error to maintain our domain boundaries
             raise ThirdPartyServiceError(f"Gemini generation failed: {e!s}")
 
     async def stream(
-        self, messages: list[dict[str, str]], system_prompt: str | None = None
+        self,
+        messages: list[dict],
+        system_prompt: str | None = None,
+        tools: list[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
     ) -> AsyncGenerator[LLMStreamChunk]:
         start_time = time.time()
         try:
@@ -129,3 +160,54 @@ class GeminiProvider(BaseLLMProvider):
         except Exception as e:
             # Domain exception boundary
             raise ThirdPartyServiceError(f"Gemini streaming failed: {e!s}")
+
+    @staticmethod
+    def _build_tools(
+        tools: list[ToolDefinition] | None,
+    ) -> list[types.Tool] | None:
+        if not tools:
+            return None
+
+        declarations = [
+            types.FunctionDeclaration(
+                name=tool.name,
+                description=tool.description,
+                parameters=tool.parameters,
+            )
+            for tool in tools
+        ]
+
+        return [types.Tool(function_declarations=declarations)]
+
+    @staticmethod
+    def _build_tool_config(
+        tool_choice: ToolChoice,
+    ) -> types.ToolConfig | None:
+        if tool_choice == "auto":
+            mode = "AUTO"
+        elif tool_choice == "none":
+            mode = "NONE"
+        else:
+            mode = "ANY"
+
+        return types.ToolConfig(
+            function_calling_config=types.FunctionCallingConfig(
+                mode=mode,
+            )
+        )
+
+    @staticmethod
+    def _extract_tool_calls(response) -> list[LLMToolCall]:
+        tool_calls: list[LLMToolCall] = []
+
+        for index, function_call in enumerate(response.function_calls or []):
+            tool_calls.append(
+                LLMToolCall(
+                    id=getattr(function_call, "id", None)
+                    or f"gemini-tool-call-{index}",
+                    name=function_call.name,
+                    arguments=dict(function_call.args or {}),
+                )
+            )
+
+        return tool_calls

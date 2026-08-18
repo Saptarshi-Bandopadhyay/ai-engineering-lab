@@ -3,6 +3,8 @@ from fastapi import Depends
 # We will import our new Gemini provider here
 from backend.app.ai.embeddings.gemini_provider import GeminiEmbeddingProvider
 from backend.app.ai.llm.gemini_provider import GeminiProvider
+from backend.app.ai.tools.defaults import create_default_tool_registry
+from backend.app.ai.tools.registry import ToolRegistry
 from backend.app.ai.vector_store.pgvector_store import PgVectorStore
 from backend.app.repositories.conversation_repository import ConversationRepository
 from backend.app.repositories.message_repository import MessageRepository
@@ -46,3 +48,7 @@ def get_conversation_engine(
         llm_provider=llm_provider,
         retrieval_service=retrieval_service,
     )
+
+
+def get_tool_registry() -> ToolRegistry:
+    return create_default_tool_registry()

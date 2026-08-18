@@ -10,7 +10,11 @@ from backend.app.ai.llm.base import (
 
 class MockLLMProvider(BaseLLMProvider):
     async def complete(
-        self, messages: list[dict], system_prompt: str | None = None
+        self,
+        messages: list[dict],
+        system_prompt: str | None = None,
+        tools=None,
+        tool_choice="auto",
     ) -> LLMResponse:
         return LLMResponse(
             content="This is a mocked AI response.",
@@ -20,7 +24,13 @@ class MockLLMProvider(BaseLLMProvider):
             latency_ms=150,
         )
 
-    async def stream(self, messages: list[dict], system_prompt: str | None = None):
+    async def stream(
+        self,
+        messages: list[dict],
+        system_prompt: str | None = None,
+        tools=None,
+        tool_choice="auto",
+    ):
         """Simulates a network stream by yielding chunks with a slight delay."""
         chunks = ["This ", "is ", "a ", "streamed ", "response."]
 
