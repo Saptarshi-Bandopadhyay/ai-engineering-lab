@@ -1,9 +1,11 @@
+import enum
 from datetime import datetime
 from typing import TYPE_CHECKING
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     DateTime,
+    Enum,
     ForeignKey,
     Integer,
     String,
@@ -20,6 +22,13 @@ if TYPE_CHECKING:
     from backend.app.models.user import User
 
 
+class DocumentStatus(str, enum.Enum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class Document(Base):
     __tablename__ = "documents"
 
@@ -31,6 +40,16 @@ class Document(Base):
     content_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[DocumentStatus] = mapped_column(
+        Enum(
+            DocumentStatus,
+            name="document_status_enum",
+            values_callable=lambda obj: [e.value for e in obj],
+        ),
+        nullable=False,
+        default=DocumentStatus.PENDING,
+        server_default=DocumentStatus.PENDING.value,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

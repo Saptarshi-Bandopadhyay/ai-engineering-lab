@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.ai.embeddings.base import BaseEmbeddingProvider
 from backend.app.ai.vector_store.base import BaseVectorStore
-from backend.app.models.document import Document, DocumentChunk
+from backend.app.models.document import Document, DocumentChunk, DocumentStatus
 from backend.app.repositories.document_repository import DocumentRepository
 
 
@@ -23,7 +23,43 @@ class IngestionService:
             chunk_size=1000, chunk_overlap=200
         )
 
-    async def ingest_upload(
+    async def ingest_document(
+        self,
+        session: AsyncSession,
+        document: Document,
+        file_bytes: bytes,
+    ) -> None:
+        text = self._extract_pdf_text(file_bytes)
+
+        chunks = self.text_splitter.split_text(text)
+
+        if not chunks:
+            raise ValueError("No extractable text found in PDF")
+
+        embeddings = await self.embedding_provider.embed_documents(chunks)
+
+        if len(embeddings) != len(chunks):
+            raise ValueError("Embedding provider returned an unexpected result")
+
+        chunk_models = [
+            DocumentChunk(
+                document_id=document.id,
+                user_id=document.user_id,
+                chunk_index=index,
+                content=chunk,
+                embedding=embeddings[index],
+            )
+            for index, chunk in enumerate(chunks)
+        ]
+
+        self.vector_store.add_chunks(
+            session,
+            chunk_models,
+        )
+
+        document.chunk_count = len(chunk_models)
+
+    async def create_document(
         self, session: AsyncSession, user_id: int, upload: UploadFile
     ) -> Document:
         filename = upload.filename or "document.pdf"
@@ -43,34 +79,14 @@ class IngestionService:
                 content_type=content_type,
                 size_bytes=len(file_bytes),
             )
+            document.status = DocumentStatus.PENDING
             session.add(document)
-            await session.flush()
-
-            text = self._extract_pdf_text(file_bytes)
-            chunks = self.text_splitter.split_text(text)
-            if not chunks:
-                raise ValueError("No extractable text found in PDF")
-
-            embeddings = await self.embedding_provider.embed_documents(chunks)
-            if len(embeddings) != len(chunks):
-                raise ValueError("Embedding provider returned an unexpected result")
-
-            chunk_models = [
-                DocumentChunk(
-                    document_id=document.id,
-                    user_id=user_id,
-                    chunk_index=index,
-                    content=chunk,
-                    embedding=embeddings[index],
-                )
-                for index, chunk in enumerate(chunks)
-            ]
-            self.vector_store.add_chunks(session, chunk_models)
-            document.chunk_count = len(chunk_models)
-
             await session.commit()
+
             await session.refresh(document)
-            return document
+
+            return document, file_bytes
+
         except Exception:
             await session.rollback()
             raise

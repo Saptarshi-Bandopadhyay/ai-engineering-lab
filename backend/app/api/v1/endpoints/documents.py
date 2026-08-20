@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.ai.embeddings.gemini_provider import GeminiEmbeddingProvider
 from backend.app.ai.vector_store.pgvector_store import PgVectorStore
+from backend.app.background.service import BackgroundService
 from backend.app.core.exceptions import NotFoundError, ThirdPartyServiceError
 from backend.app.dependencies.auth import get_current_user
 from backend.app.dependencies.database import get_db
@@ -35,12 +36,31 @@ async def upload_document(
     service: IngestionService = Depends(get_ingestion_service),
 ):
     try:
-        return await service.ingest_upload(session, current_user.id, file)
+        document, file_bytes = await service.create_document(
+            session,
+            current_user.id,
+            file,
+        )
+
+        background = BackgroundService()
+
+        await background.dispatch_document_ingestion(
+            document.id,
+            file_bytes,
+        )
+
+        return document
+
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
     except ThirdPartyServiceError as e:
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
         )
 
 

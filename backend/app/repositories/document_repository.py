@@ -20,6 +20,21 @@ class DocumentRepository:
             size_bytes=size_bytes,
         )
 
+    async def get_by_id(
+        self,
+        session: AsyncSession,
+        document_id: int,
+    ) -> Document | None:
+        stmt = (
+            select(Document)
+            .where(Document.id == document_id)
+            .options(selectinload(Document.chunks))
+        )
+
+        result = await session.execute(stmt)
+
+        return result.scalar_one_or_none()
+
     async def get_for_user(
         self, session: AsyncSession, document_id: int, user_id: int
     ) -> Document | None:
