@@ -3,6 +3,9 @@ from backend.app.db.base import Base as Base
 from backend.app.models.conversation import Conversation as Conversation
 from backend.app.models.document import Document as Document
 from backend.app.models.document import DocumentChunk as DocumentChunk
+from backend.app.models.memory import ConversationSummary as ConversationSummary
+from backend.app.models.memory import MemoryType as MemoryType
+from backend.app.models.memory import UserMemory as UserMemory
 from backend.app.models.message import Message as Message
 from backend.app.models.user import User as User
 

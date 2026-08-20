@@ -4,15 +4,20 @@ from fastapi import Depends
 from backend.app.ai.agent import AgentLoop
 from backend.app.ai.embeddings.gemini_provider import GeminiEmbeddingProvider
 from backend.app.ai.llm.gemini_provider import GeminiProvider
+from backend.app.ai.memory.gemini_memory_provider import GeminiMemoryProvider
 from backend.app.ai.prompt_builder import PromptBuilder
 from backend.app.ai.tools.defaults import create_default_tool_registry
 from backend.app.ai.tools.registry import ToolRegistry
 from backend.app.ai.vector_store.pgvector_store import PgVectorStore
 from backend.app.repositories.conversation_repository import ConversationRepository
+from backend.app.repositories.memory_repository import MemoryRepository
 from backend.app.repositories.message_repository import MessageRepository
+from backend.app.services.context_service import ContextService
 from backend.app.services.conversation_engine import ConversationEngine
 from backend.app.services.conversation_service import ConversationService
+from backend.app.services.memory_service import MemoryService
 from backend.app.services.retrieval_service import RetrievalService
+from backend.app.services.user_memory_service import UserMemoryService
 
 
 def get_conversation_service() -> ConversationService:
@@ -39,12 +44,41 @@ def get_tool_registry() -> ToolRegistry:
     return create_default_tool_registry()
 
 
+def get_memory_provider() -> GeminiMemoryProvider:
+    return GeminiMemoryProvider()
+
+
+def get_memory_service(
+    provider: GeminiMemoryProvider = Depends(get_memory_provider),
+) -> MemoryService:
+    return MemoryService(
+        repository=MemoryRepository(),
+        provider=provider,
+    )
+
+
+def get_user_memory_service(
+    provider: GeminiMemoryProvider = Depends(get_memory_provider),
+) -> UserMemoryService:
+    return UserMemoryService(
+        repository=MemoryRepository(),
+        provider=provider,
+    )
+
+
+def get_context_service() -> ContextService:
+    return ContextService(max_messages=20)
+
+
 def get_conversation_engine(
     conv_service: ConversationService = Depends(get_conversation_service),
     msg_repo: MessageRepository = Depends(get_message_repository),
     llm_provider: GeminiProvider = Depends(get_llm_provider),
     retrieval_service: RetrievalService = Depends(get_retrieval_service),
     tool_registry: ToolRegistry = Depends(get_tool_registry),
+    memory_service: MemoryService = Depends(get_memory_service),
+    user_memory_service: UserMemoryService = Depends(get_user_memory_service),
+    context_service: ContextService = Depends(get_context_service),
 ) -> ConversationEngine:
     """
     Assembles the ConversationEngine with all its required dependencies.
@@ -61,4 +95,7 @@ def get_conversation_engine(
         retrieval_service=retrieval_service,
         prompt_builder=PromptBuilder(),
         agent_loop=agent_loop,
+        memory_service=memory_service,
+        user_memory_service=user_memory_service,
+        context_service=context_service,
     )

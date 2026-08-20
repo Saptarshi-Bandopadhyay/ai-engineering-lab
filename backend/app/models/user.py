@@ -5,6 +5,7 @@ from sqlalchemy import Boolean, DateTime, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.db.base import Base
+from backend.app.models.memory import UserMemory
 
 if TYPE_CHECKING:
     from backend.app.models.conversation import Conversation
@@ -35,4 +36,10 @@ class User(Base):
     )
     documents: Mapped[list["Document"]] = relationship(
         "Document", back_populates="user", cascade="all, delete-orphan"
+    )
+
+    memories: Mapped[list["UserMemory"]] = relationship(
+        "UserMemory",
+        back_populates="user",
+        cascade="all, delete-orphan",
     )

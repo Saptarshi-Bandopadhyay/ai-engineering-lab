@@ -11,8 +11,11 @@ from backend.app.ai.llm.base import BaseLLMProvider, LLMStreamChunk, StreamEvent
 from backend.app.ai.prompt_builder import PromptBuilder
 from backend.app.models.message import MessageRole, MessageStatus
 from backend.app.repositories.message_repository import MessageRepository
+from backend.app.services.context_service import ContextService
 from backend.app.services.conversation_service import ConversationService
+from backend.app.services.memory_service import MemoryService
 from backend.app.services.retrieval_service import RetrievalService
+from backend.app.services.user_memory_service import UserMemoryService
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +29,9 @@ class ConversationEngine:
         retrieval_service: RetrievalService,
         prompt_builder: PromptBuilder,
         agent_loop: AgentLoop,
+        memory_service: MemoryService,
+        user_memory_service: UserMemoryService,
+        context_service: ContextService,
     ):
         self.conv_service = conv_service
         self.msg_repo = msg_repo
@@ -33,6 +39,9 @@ class ConversationEngine:
         self.retrieval_service = retrieval_service
         self.prompt_builder = prompt_builder
         self.agent_loop = agent_loop
+        self.memory_service = memory_service
+        self.user_memory_service = user_memory_service
+        self.context_service = context_service
 
     async def process_user_message(
         self, session: AsyncSession, conversation_id: int, user_id: int, content: str
@@ -50,10 +59,18 @@ class ConversationEngine:
         history = await self.msg_repo.get_history_by_conversation(
             session, conversation_id
         )
-        messages = self._build_agent_messages(history)
-
+        summary, memories, messages = await self._build_memory_context(
+            session,
+            conversation_id,
+            user_id,
+            history,
+        )
         retrieved_context = await self._retrieve_context(session, user_id, content)
-        system_prompt = PromptBuilder.build_system_prompt(retrieved_context)
+        system_prompt = self.prompt_builder.build_system_prompt(
+            retrieved_context=retrieved_context,
+            conversation_summary=summary,
+            user_memories=memories,
+        )
 
         # 4. Run the provider-independent agent loop
         agent_result = await self.agent_loop.run(
@@ -74,6 +91,22 @@ class ConversationEngine:
         session.add(ai_msg)
         await session.commit()
         await session.refresh(ai_msg)
+
+        # 6. Extract and persist durable user memories.
+        # Memory extraction must not make an otherwise successful
+        # conversation request fail.
+        try:
+            history = await self.msg_repo.get_history_by_conversation(
+                session, conversation_id
+            )
+
+            await self.user_memory_service.extract_and_store_memories(
+                session=session,
+                user_id=user_id,
+                messages=self._build_agent_messages(history),
+            )
+        except Exception as e:
+            logger.warning("User memory extraction skipped: %s", e)
 
         return [user_msg, ai_msg]
 
@@ -108,16 +141,20 @@ class ConversationEngine:
             session, conversation_id
         )
 
-        messages = [
-            {
-                "role": message.role.value.lower(),
-                "content": message.content,
-            }
-            for message in history
-        ]
+        summary, memories, messages = await self._build_memory_context(
+            session,
+            conversation_id,
+            user_id,
+            history,
+        )
 
         retrieved_context = await self._retrieve_context(session, user_id, content)
-        system_prompt = PromptBuilder.build_system_prompt(retrieved_context)
+
+        system_prompt = self.prompt_builder.build_system_prompt(
+            retrieved_context=retrieved_context,
+            conversation_summary=summary,
+            user_memories=memories,
+        )
 
         accumulated_content = ""
         status = MessageStatus.COMPLETED
@@ -171,6 +208,23 @@ class ConversationEngine:
                             f"[{request_id}] Assistant message saved. Status: {status}"
                         )
 
+                        # Extract and persist durable user memories after the
+                        # assistant response has been successfully saved.
+                        try:
+                            history = await self.msg_repo.get_history_by_conversation(
+                                session, conversation_id
+                            )
+
+                            await self.user_memory_service.extract_and_store_memories(
+                                session=session,
+                                user_id=user_id,
+                                messages=self._build_agent_messages(history),
+                            )
+                        except Exception as memory_e:
+                            logger.warning(
+                                f"[{request_id}] User memory extraction skipped: {memory_e}"
+                            )
+
                         yield LLMStreamChunk(
                             event_type=StreamEventType.COMPLETED,
                             content=json.dumps({"id": ai_msg.id}),
@@ -216,6 +270,33 @@ class ConversationEngine:
             }
             for message in history
         ]
+
+    async def _build_memory_context(
+        self,
+        session: AsyncSession,
+        conversation_id: int,
+        user_id: int,
+        history: list,
+    ) -> tuple[str | None, list, list[dict[str, str]]]:
+        summary_record = await self.memory_service.get_conversation_summary(
+            session,
+            conversation_id,
+        )
+
+        memories = await self.user_memory_service.get_memories(
+            session,
+            user_id,
+        )
+
+        messages = self._build_agent_messages(history)
+
+        context = self.context_service.build_context(
+            messages=messages,
+            summary=summary_record.summary if summary_record else None,
+            memories=memories,
+        )
+
+        return context.summary, context.memories, context.messages
 
     async def _retrieve_context(
         self, session: AsyncSession, user_id: int, query: str

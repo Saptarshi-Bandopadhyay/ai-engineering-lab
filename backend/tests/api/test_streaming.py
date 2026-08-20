@@ -1,11 +1,17 @@
 from backend.app.ai.agent import AgentLoop
+from backend.app.ai.memory.gemini_memory_provider import GeminiMemoryProvider
+from backend.app.ai.prompt_builder import PromptBuilder
 from backend.app.ai.tools.defaults import create_default_tool_registry
 from backend.app.dependencies.engine import get_conversation_engine
 from backend.app.main import app
 from backend.app.repositories.conversation_repository import ConversationRepository
+from backend.app.repositories.memory_repository import MemoryRepository
 from backend.app.repositories.message_repository import MessageRepository
+from backend.app.services.context_service import ContextService
 from backend.app.services.conversation_engine import ConversationEngine
 from backend.app.services.conversation_service import ConversationService
+from backend.app.services.memory_service import MemoryService
+from backend.app.services.user_memory_service import UserMemoryService
 from backend.tests.mocks.llm import MockLLMProvider
 
 
@@ -14,17 +20,27 @@ async def test_successful_streaming_flow(
 ):
     # 1. Inject the mock dependencies
     mock_llm = MockLLMProvider()
+    memory_provider = GeminiMemoryProvider()
 
     app.dependency_overrides[get_conversation_engine] = lambda: ConversationEngine(
         conv_service=ConversationService(ConversationRepository()),
         msg_repo=MessageRepository(),
         llm_provider=mock_llm,
         retrieval_service=None,
-        prompt_builder=None,
+        prompt_builder=PromptBuilder(),
         agent_loop=AgentLoop(
             llm_provider=mock_llm,
             tool_registry=create_default_tool_registry(),
         ),
+        memory_service=MemoryService(
+            repository=MemoryRepository(),
+            provider=memory_provider,
+        ),
+        user_memory_service=UserMemoryService(
+            repository=MemoryRepository(),
+            provider=memory_provider,
+        ),
+        context_service=ContextService(max_messages=20),
     )
 
     # 2. Open the streaming connection

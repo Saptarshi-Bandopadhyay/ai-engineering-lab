@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     default_embedding_model: str = "gemini-embedding-001"
     embedding_dimensions: int = 768
 
+    memory_summary_message_threshold: int = 20
+    memory_max_messages: int = 20
+
     # Database individual parameters
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str

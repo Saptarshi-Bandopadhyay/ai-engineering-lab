@@ -5,6 +5,7 @@ from sqlalchemy import DateTime, ForeignKey, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.db.base import Base
+from backend.app.models.memory import ConversationSummary
 
 if TYPE_CHECKING:
     from backend.app.models.message import Message
@@ -41,4 +42,11 @@ class Conversation(Base):
 
     messages: Mapped[list["Message"]] = relationship(
         "Message", back_populates="conversation", order_by="Message.created_at"
+    )
+
+    summary: Mapped["ConversationSummary | None"] = relationship(
+        "ConversationSummary",
+        back_populates="conversation",
+        uselist=False,
+        cascade="all, delete-orphan",
     )
