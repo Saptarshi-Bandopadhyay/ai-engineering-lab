@@ -56,7 +56,7 @@ class ToolRegistry:
 
                 result = await tool.execute(arguments)
 
-            TOOL_LATENCY.observe(time.perf_counter() - start)
+            TOOL_LATENCY.labels(name).observe(time.perf_counter() - start)
 
             logger.info(
                 "Executed tool %s",

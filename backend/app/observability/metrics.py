@@ -41,6 +41,7 @@ RETRIEVAL_LATENCY = Histogram(
 TOOL_LATENCY = Histogram(
     "tool_latency_seconds",
     "Tool execution latency",
+    ["tool"],
 )
 
 TOOL_CALL_COUNTER = Counter(
