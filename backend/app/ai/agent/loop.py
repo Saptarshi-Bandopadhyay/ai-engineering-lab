@@ -1,3 +1,7 @@
+import time
+
+from opentelemetry import trace
+
 from backend.app.ai.agent.base import (
     AgentAction,
     AgentLoopConfig,
@@ -7,6 +11,13 @@ from backend.app.ai.agent.base import (
 )
 from backend.app.ai.llm.base import BaseLLMProvider, LLMResponse
 from backend.app.ai.tools.registry import ToolRegistry
+from backend.app.observability.metrics import (
+    AGENT_ITERATIONS,
+    TOOL_CALL_COUNTER,
+    TOOL_LATENCY,
+)
+
+tracer = trace.get_tracer(__name__)
 
 
 class AgentLoop:
@@ -46,16 +57,23 @@ class AgentLoop:
         mutated by tool-call/tool-result messages generated during execution.
         """
 
-        working_messages = list(messages)
-        steps: list[AgentStep] = []
+        with tracer.start_as_current_span("agent.run") as span:
+            span.set_attribute("agent.max_iterations", self.config.max_iterations)
+
+            working_messages = list(messages)
+            steps = []
 
         for iteration in range(1, self.config.max_iterations + 1):
-            response = await self.llm_provider.complete(
-                working_messages,
-                system_prompt=system_prompt,
-                tools=self.tool_registry.definitions(),
-                tool_choice="auto",
-            )
+            with tracer.start_as_current_span("agent.iteration") as iteration_span:
+                iteration_span.set_attribute("iteration", iteration)
+
+            with tracer.start_as_current_span("llm.complete"):
+                response = await self.llm_provider.complete(
+                    working_messages,
+                    system_prompt=system_prompt,
+                    tools=self.tool_registry.definitions(),
+                    tool_choice="auto",
+                )
 
             actions = self._build_actions(response)
 
@@ -68,6 +86,10 @@ class AgentLoop:
             # No tool calls means the LLM has produced the final response.
             if not response.tool_calls:
                 steps.append(step)
+
+                AGENT_ITERATIONS.observe(iteration)
+
+                span.set_attribute("agent.stop_reason", "final_response")
 
                 return AgentLoopResult(
                     content=response.content,
@@ -86,11 +108,22 @@ class AgentLoop:
             tool_results = []
 
             for tool_call in response.tool_calls:
-                result = await self.tool_registry.execute(
-                    tool_call_id=tool_call.id,
-                    name=tool_call.name,
-                    arguments=tool_call.arguments,
-                )
+                TOOL_CALL_COUNTER.labels(tool_call.name).inc()
+
+                start = time.perf_counter()
+
+                with tracer.start_as_current_span(
+                    f"tool.{tool_call.name}"
+                ) as tool_span:
+                    tool_span.set_attribute("tool.name", tool_call.name)
+
+                    result = await self.tool_registry.execute(
+                        tool_call_id=tool_call.id,
+                        name=tool_call.name,
+                        arguments=tool_call.arguments,
+                    )
+
+                TOOL_LATENCY.labels(tool_call.name).observe(time.perf_counter() - start)
 
                 tool_results.append(result)
 
@@ -99,6 +132,8 @@ class AgentLoop:
             step.tool_results = tool_results
             steps.append(step)
 
+        AGENT_ITERATIONS.observe(self.config.max_iterations)
+        span.set_attribute("agent.stop_reason", "max_iterations")
         # The LLM kept requesting tools without producing a final answer.
         return AgentLoopResult(
             content="",
@@ -129,10 +164,16 @@ class AgentLoop:
         existing streaming interface used by the API.
         """
 
-        working_messages = list(messages)
-        steps: list[AgentStep] = []
+        with tracer.start_as_current_span("agent.run") as span:
+            span.set_attribute("agent.max_iterations", self.config.max_iterations)
+
+            working_messages = list(messages)
+            steps = []
 
         for iteration in range(1, self.config.max_iterations + 1):
+            with tracer.start_as_current_span("agent.iteration") as iteration_span:
+                iteration_span.set_attribute("iteration", iteration)
+
             response = await self.llm_provider.complete(
                 working_messages,
                 system_prompt=system_prompt,

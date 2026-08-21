@@ -1,8 +1,10 @@
+import logging
 import time
 from collections.abc import AsyncGenerator
 
 from google import genai
 from google.genai import types
+from opentelemetry import trace
 
 from backend.app.ai.llm.base import (
     BaseLLMProvider,
@@ -13,6 +15,17 @@ from backend.app.ai.llm.base import (
 from backend.app.ai.llm.tooling import LLMToolCall, ToolChoice, ToolDefinition
 from backend.app.core.config import settings
 from backend.app.core.exceptions import ThirdPartyServiceError
+from backend.app.observability.metrics import (
+    LLM_COMPLETION_TOKENS,
+    LLM_FAILED_REQUESTS,
+    LLM_LATENCY,
+    LLM_PROMPT_TOKENS,
+    LLM_TOTAL_REQUESTS,
+)
+
+tracer = trace.get_tracer(__name__)
+
+logger = logging.getLogger(__name__)
 
 
 class GeminiProvider(BaseLLMProvider):
@@ -112,7 +125,7 @@ class GeminiProvider(BaseLLMProvider):
         tool_choice: ToolChoice = "auto",
     ) -> LLMResponse:
         start_time = time.time()
-
+        LLM_TOTAL_REQUESTS.inc()
         try:
             formatted_history = self._format_history_for_gemini(messages)
 
@@ -137,24 +150,12 @@ class GeminiProvider(BaseLLMProvider):
                 types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
             )
 
-            response = await self.client.aio.models.generate_content(
-                model=self.model,
-                contents=formatted_history,
-                config=config,
-            )
-
-            if response.candidates:
-                content = response.candidates[0].content
-
-                for i, part in enumerate(content.parts):
-                    print(
-                        "GEMINI PART",
-                        i,
-                        "function_call=",
-                        part.function_call,
-                        "thought_signature=",
-                        bool(part.thought_signature),
-                    )
+            with tracer.start_as_current_span("llm.gemini.complete") as span:
+                response = await self.client.aio.models.generate_content(
+                    model=self.model,
+                    contents=formatted_history,
+                    config=config,
+                )
 
             latency = int((time.time() - start_time) * 1000)
 
@@ -168,6 +169,23 @@ class GeminiProvider(BaseLLMProvider):
                 getattr(response.usage_metadata, "candidates_token_count", 0)
                 if response.usage_metadata
                 else 0
+            )
+            LLM_LATENCY.observe(latency / 1000)
+
+            LLM_PROMPT_TOKENS.inc(prompt_tokens)
+
+            LLM_COMPLETION_TOKENS.inc(completion_tokens)
+
+            span.set_attribute("llm.model", self.model)
+            span.set_attribute("llm.prompt_tokens", prompt_tokens)
+            span.set_attribute("llm.completion_tokens", completion_tokens)
+
+            logger.info(
+                "LLM completed model=%s prompt=%d completion=%d latency=%dms",
+                self.model,
+                prompt_tokens,
+                completion_tokens,
+                latency,
             )
 
             tool_calls = self._extract_tool_calls(response)
@@ -186,9 +204,8 @@ class GeminiProvider(BaseLLMProvider):
             )
 
         except Exception as e:
-            import logging
-
-            logging.getLogger(__name__).exception("Gemini generation failed")
+            LLM_FAILED_REQUESTS.inc()
+            logger.exception("Gemini generation failed")
             raise ThirdPartyServiceError(f"Gemini generation failed: {e!s}") from e
 
     async def stream(
@@ -199,6 +216,7 @@ class GeminiProvider(BaseLLMProvider):
         tool_choice: ToolChoice = "auto",
     ) -> AsyncGenerator[LLMStreamChunk]:
         start_time = time.time()
+        LLM_TOTAL_REQUESTS.inc()
         try:
             formatted_history = self._format_history_for_gemini(messages)
             past_history = formatted_history[:-1]
@@ -216,27 +234,42 @@ class GeminiProvider(BaseLLMProvider):
             )
 
             # Request the streaming response
-            response_stream = await chat.send_message_stream(current_message)
+            with tracer.start_as_current_span("llm.gemini.stream") as span:
+                span.set_attribute("llm.model", self.model)
 
-            async for chunk in response_stream:
-                if chunk.text:
-                    yield LLMStreamChunk(
-                        event_type=StreamEventType.TOKEN, content=chunk.text
-                    )
+                response_stream = await chat.send_message_stream(current_message)
 
-            # The stream is done. We yield a final metadata event.
-            latency = int((time.time() - start_time) * 1000)
-            yield LLMStreamChunk(
-                event_type=StreamEventType.COMPLETED,
-                content="",
-                provider_model=self.model,
-                latency_ms=latency,
-            )
+                async for chunk in response_stream:
+                    if chunk.text:
+                        yield LLMStreamChunk(
+                            event_type=StreamEventType.TOKEN,
+                            content=chunk.text,
+                        )
 
+                latency = int((time.time() - start_time) * 1000)
+
+                span.set_attribute(
+                    "llm.latency_ms",
+                    latency,
+                )
+
+                LLM_LATENCY.observe(latency / 1000)
+
+                logger.info(
+                    "LLM stream completed model=%s latency=%dms",
+                    self.model,
+                    latency,
+                )
+
+                yield LLMStreamChunk(
+                    event_type=StreamEventType.COMPLETED,
+                    content="",
+                    provider_model=self.model,
+                    latency_ms=latency,
+                )
         except Exception as e:
-            import logging
-
-            logging.getLogger(__name__).exception("Gemini generation failed")
+            LLM_FAILED_REQUESTS.inc()
+            logger.exception("Gemini streaming failed")
             raise ThirdPartyServiceError(f"Gemini generation failed: {e!s}") from e
 
     @staticmethod

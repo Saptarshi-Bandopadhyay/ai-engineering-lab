@@ -1,7 +1,19 @@
+import logging
+import time
 from dataclasses import replace
+
+from opentelemetry import trace
 
 from backend.app.ai.llm.tooling import ToolDefinition
 from backend.app.ai.tools.base import BaseTool, ToolResult
+from backend.app.observability.metrics import (
+    TOOL_CALL_COUNTER,
+    TOOL_LATENCY,
+)
+
+logger = logging.getLogger(__name__)
+
+tracer = trace.get_tracer(__name__)
 
 
 class ToolRegistry:
@@ -35,7 +47,21 @@ class ToolRegistry:
         tool = self.get(name)
 
         try:
-            result = await tool.execute(arguments)
+            TOOL_CALL_COUNTER.labels(name).inc()
+
+            start = time.perf_counter()
+
+            with tracer.start_as_current_span(f"tool.{name}") as span:
+                span.set_attribute("tool.name", name)
+
+                result = await tool.execute(arguments)
+
+            TOOL_LATENCY.observe(time.perf_counter() - start)
+
+            logger.info(
+                "Executed tool %s",
+                name,
+            )
 
             # Built-in tools don't need to know about provider-specific
             # call IDs. The registry owns that concern.
@@ -46,6 +72,10 @@ class ToolRegistry:
             )
 
         except Exception as exc:
+            logger.exception(
+                "Tool %s failed",
+                name,
+            )
             return ToolResult(
                 tool_call_id=tool_call_id,
                 name=name,

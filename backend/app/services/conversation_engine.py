@@ -4,18 +4,24 @@ import logging
 import uuid
 from collections.abc import AsyncGenerator
 
+from opentelemetry import trace
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.ai.agent import AgentLoop
 from backend.app.ai.llm.base import BaseLLMProvider, LLMStreamChunk, StreamEventType
 from backend.app.ai.prompt_builder import PromptBuilder
 from backend.app.models.message import MessageRole, MessageStatus
+from backend.app.observability.metrics import (
+    LLM_FAILED_REQUESTS,
+)
 from backend.app.repositories.message_repository import MessageRepository
 from backend.app.services.context_service import ContextService
 from backend.app.services.conversation_service import ConversationService
 from backend.app.services.memory_service import MemoryService
 from backend.app.services.retrieval_service import RetrievalService
 from backend.app.services.user_memory_service import UserMemoryService
+
+tracer = trace.get_tracer(__name__)
 
 logger = logging.getLogger(__name__)
 
@@ -59,13 +65,38 @@ class ConversationEngine:
         history = await self.msg_repo.get_history_by_conversation(
             session, conversation_id
         )
-        summary, memories, messages = await self._build_memory_context(
-            session,
-            conversation_id,
-            user_id,
-            history,
-        )
-        retrieved_context = await self._retrieve_context(session, user_id, content)
+        with tracer.start_as_current_span("memory.build") as span:
+            summary, memories, messages = await self._build_memory_context(
+                session,
+                conversation_id,
+                user_id,
+                history,
+            )
+
+            span.set_attribute(
+                "memory.summary_exists",
+                summary is not None,
+            )
+
+            span.set_attribute(
+                "memory.count",
+                len(memories),
+            )
+
+        with tracer.start_as_current_span("rag.retrieve") as span:
+            span.set_attribute("user.id", user_id)
+
+            retrieved_context = await self._retrieve_context(
+                session,
+                user_id,
+                content,
+            )
+
+            span.set_attribute(
+                "rag.has_context",
+                retrieved_context is not None,
+            )
+
         system_prompt = self.prompt_builder.build_system_prompt(
             retrieved_context=retrieved_context,
             conversation_summary=summary,
@@ -73,10 +104,37 @@ class ConversationEngine:
         )
 
         # 4. Run the provider-independent agent loop
-        agent_result = await self.agent_loop.run(
-            messages=messages,
-            system_prompt=system_prompt,
-        )
+
+        with tracer.start_as_current_span("llm.generate") as span:
+            span.set_attribute(
+                "conversation.id",
+                conversation_id,
+            )
+
+            span.set_attribute(
+                "user.id",
+                user_id,
+            )
+
+            agent_result = await self.agent_loop.run(
+                messages=messages,
+                system_prompt=system_prompt,
+            )
+
+            span.set_attribute(
+                "llm.model",
+                agent_result.provider_model,
+            )
+
+            span.set_attribute(
+                "llm.prompt_tokens",
+                agent_result.prompt_tokens or 0,
+            )
+
+            span.set_attribute(
+                "llm.completion_tokens",
+                agent_result.completion_tokens or 0,
+            )
 
         # 5. Persist the final assistant response
         ai_msg = self.msg_repo.add(
@@ -88,9 +146,12 @@ class ConversationEngine:
             completion_tokens=agent_result.completion_tokens,
             latency_ms=agent_result.latency_ms,
         )
-        session.add(ai_msg)
-        await session.commit()
-        await session.refresh(ai_msg)
+        with tracer.start_as_current_span("database.save_response"):
+            session.add(ai_msg)
+
+            await session.commit()
+
+            await session.refresh(ai_msg)
 
         # 6. Extract and persist durable user memories.
         # Memory extraction must not make an otherwise successful
@@ -141,14 +202,37 @@ class ConversationEngine:
             session, conversation_id
         )
 
-        summary, memories, messages = await self._build_memory_context(
-            session,
-            conversation_id,
-            user_id,
-            history,
-        )
+        with tracer.start_as_current_span("memory.build") as span:
+            summary, memories, messages = await self._build_memory_context(
+                session,
+                conversation_id,
+                user_id,
+                history,
+            )
 
-        retrieved_context = await self._retrieve_context(session, user_id, content)
+            span.set_attribute(
+                "memory.summary_exists",
+                summary is not None,
+            )
+
+            span.set_attribute(
+                "memory.count",
+                len(memories),
+            )
+
+        with tracer.start_as_current_span("rag.retrieve") as span:
+            span.set_attribute("user.id", user_id)
+
+            retrieved_context = await self._retrieve_context(
+                session,
+                user_id,
+                content,
+            )
+
+            span.set_attribute(
+                "rag.has_context",
+                retrieved_context is not None,
+            )
 
         system_prompt = self.prompt_builder.build_system_prompt(
             retrieved_context=retrieved_context,
@@ -202,7 +286,8 @@ class ConversationEngine:
                     session.add(ai_msg)
 
                     try:
-                        await session.commit()
+                        with tracer.start_as_current_span("database.save_response"):
+                            await session.commit()
 
                         logger.info(
                             f"[{request_id}] Assistant message saved. Status: {status}"
@@ -252,6 +337,7 @@ class ConversationEngine:
             raise
 
         except Exception as e:
+            LLM_FAILED_REQUESTS.inc()
             logger.error(f"[{request_id}] Agent execution failed: {e!s}")
 
             status = MessageStatus.FAILED

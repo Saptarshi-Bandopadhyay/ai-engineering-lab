@@ -2,11 +2,17 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
 from backend.app.api.v1.endpoints import auth, conversation, documents, messages, users
 from backend.app.core.config import settings
 from backend.app.core.logging_config import setup_logging
+from backend.app.middleware.logging import LoggingMiddleware
+from backend.app.observability.metrics import metrics_response
+from backend.app.observability.tracing import setup_tracing
 from backend.app.schemas.health import HealthCheckResponse
+
+setup_tracing()
 
 setup_logging()
 
@@ -31,6 +37,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+FastAPIInstrumentor.instrument_app(app)
+
+app.add_middleware(LoggingMiddleware)
+
 app.include_router(users.router, prefix=f"{settings.api_prefix}/users", tags=["Users"])
 
 app.include_router(auth.router, prefix=f"{settings.api_prefix}/auth", tags=["Auth"])
@@ -48,6 +58,14 @@ app.include_router(
     prefix=f"{settings.api_prefix}/documents",
     tags=["Documents"],
 )
+
+
+@app.get(
+    "/metrics",
+    include_in_schema=False,
+)
+def metrics():
+    return metrics_response()
 
 
 @app.get("/health", response_model=HealthCheckResponse)

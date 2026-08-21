@@ -1,12 +1,24 @@
+import logging
+import time
+
 import pymupdf
 from fastapi import UploadFile
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from opentelemetry import trace
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.ai.embeddings.base import BaseEmbeddingProvider
 from backend.app.ai.vector_store.base import BaseVectorStore
 from backend.app.models.document import Document, DocumentChunk, DocumentStatus
+from backend.app.observability.metrics import (
+    DOCUMENT_CHUNKS,
+    INGESTION_LATENCY,
+)
 from backend.app.repositories.document_repository import DocumentRepository
+
+logger = logging.getLogger(__name__)
+
+tracer = trace.get_tracer(__name__)
 
 
 class IngestionService:
@@ -29,35 +41,58 @@ class IngestionService:
         document: Document,
         file_bytes: bytes,
     ) -> None:
-        text = self._extract_pdf_text(file_bytes)
+        start = time.perf_counter()
 
-        chunks = self.text_splitter.split_text(text)
-
-        if not chunks:
-            raise ValueError("No extractable text found in PDF")
-
-        embeddings = await self.embedding_provider.embed_documents(chunks)
-
-        if len(embeddings) != len(chunks):
-            raise ValueError("Embedding provider returned an unexpected result")
-
-        chunk_models = [
-            DocumentChunk(
-                document_id=document.id,
-                user_id=document.user_id,
-                chunk_index=index,
-                content=chunk,
-                embedding=embeddings[index],
+        with tracer.start_as_current_span("document.ingestion") as span:
+            text = self._extract_pdf_text(file_bytes)
+            span.set_attribute(
+                "document.characters",
+                len(text),
             )
-            for index, chunk in enumerate(chunks)
-        ]
 
-        self.vector_store.add_chunks(
-            session,
-            chunk_models,
-        )
+            chunks = self.text_splitter.split_text(text)
+            DOCUMENT_CHUNKS.observe(len(chunks))
+            span.set_attribute(
+                "document.chunks",
+                len(chunks),
+            )
 
-        document.chunk_count = len(chunk_models)
+            if not chunks:
+                raise ValueError("No extractable text found in PDF")
+
+            embeddings = await self.embedding_provider.embed_documents(chunks)
+            span.set_attribute(
+                "document.embeddings",
+                len(embeddings),
+            )
+
+            if len(embeddings) != len(chunks):
+                raise ValueError("Embedding provider returned an unexpected result")
+
+            chunk_models = [
+                DocumentChunk(
+                    document_id=document.id,
+                    user_id=document.user_id,
+                    chunk_index=index,
+                    content=chunk,
+                    embedding=embeddings[index],
+                )
+                for index, chunk in enumerate(chunks)
+            ]
+
+            self.vector_store.add_chunks(
+                session,
+                chunk_models,
+            )
+
+            document.chunk_count = len(chunk_models)
+            INGESTION_LATENCY.observe(time.perf_counter() - start)
+
+            logger.info(
+                "Document %s ingested (%d chunks)",
+                document.id,
+                len(chunk_models),
+            )
 
     async def create_document(
         self, session: AsyncSession, user_id: int, upload: UploadFile
