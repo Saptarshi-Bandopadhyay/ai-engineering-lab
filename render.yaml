@@ -1,0 +1,50 @@
+services:
+  - type: web
+    name: ai-engineering-lab-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    plan: free
+
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+
+      - key: DEBUG
+        value: "false"
+
+      - key: SECRET_KEY
+        generateValue: true
+
+      - key: GEMINI_API_KEY
+        sync: false
+
+      - key: POSTGRES_HOST
+        fromDatabase:
+          name: ai-engineering-lab-db
+          property: host
+
+      - key: POSTGRES_PORT
+        fromDatabase:
+          name: ai-engineering-lab-db
+          property: port
+
+      - key: POSTGRES_USER
+        fromDatabase:
+          name: ai-engineering-lab-db
+          property: user
+
+      - key: POSTGRES_PASSWORD
+        fromDatabase:
+          name: ai-engineering-lab-db
+          property: password
+
+      - key: POSTGRES_DB
+        fromDatabase:
+          name: ai-engineering-lab-db
+          property: database
+
+databases:
+  - name: ai-engineering-lab-db
+    plan: free
