@@ -12,6 +12,14 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
+    env:
+      SECRET_KEY: test-secret-key
+      GEMINI_API_KEY: test-gemini-api-key
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_HOST: localhost
+      POSTGRES_DB: ai_workspace
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
