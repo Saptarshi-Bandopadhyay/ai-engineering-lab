@@ -2,7 +2,9 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from backend.app.api.v1.endpoints import auth, conversation, documents, messages, users
 from backend.app.core.config import settings
@@ -35,6 +37,19 @@ app = FastAPI(
     version=settings.version,
     openapi_url=f"{settings.api_prefix}/openapi.json",
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=settings.allowed_hosts,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 FastAPIInstrumentor.instrument_app(app)

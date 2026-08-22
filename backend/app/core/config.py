@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
 
@@ -27,7 +28,11 @@ class Settings(BaseSettings):
     memory_summary_message_threshold: int = 20
     memory_max_messages: int = 20
 
-    # Database individual parameters
+    # Production web configuration
+    allowed_origins: list[str] = Field(default_factory=list)
+    allowed_hosts: list[str] = Field(default_factory=lambda: ["*"])
+
+    # Database
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str
     POSTGRES_HOST: str
@@ -49,11 +54,11 @@ class Settings(BaseSettings):
             database=self.POSTGRES_DB,
         )
 
-    # Automatically read from the .env file
     model_config = SettingsConfigDict(
-        env_file=str(BASE_DIR / ".env"), env_file_encoding="utf-8", extra="ignore"
+        env_file=str(BASE_DIR / ".env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
     )
 
 
-# Instantiate it once to be imported across the app
 settings = Settings()
